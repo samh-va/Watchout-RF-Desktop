@@ -273,6 +273,22 @@ class SpectrumViewModel {
         )
     }
 
+    fun updateNumBins(numBins: Int) {
+        averager.reset()
+        _state.value = _state.value.copy(
+            scanConfig = _state.value.scanConfig.copy(numBins = numBins),
+            currentSpectrum = null,
+            maxHoldSpectrum = null,
+        )
+    }
+
+    fun updateMarkerColor(markerId: Int, color: MarkerColor) {
+        val existing = _state.value.markers.map {
+            if (it.id == markerId) it.copy(color = color) else it
+        }
+        _state.value = _state.value.copy(markers = existing)
+    }
+
     fun toggleMaxHold() {
         val config = _state.value.scanConfig
         val newEnabled = !config.maxHoldEnabled
@@ -322,6 +338,47 @@ class SpectrumViewModel {
         _state.value = _state.value.copy(
             markers = emptyList(),
             activeMarkerX = null
+        )
+    }
+
+    fun updateMarkerLabel(markerId: Int, newLabel: String) {
+        val existing = _state.value.markers.map {
+            if (it.id == markerId) it.copy(label = newLabel) else it
+        }
+        _state.value = _state.value.copy(markers = existing)
+    }
+
+    fun removeMarker(markerId: Int) {
+        val existing = _state.value.markers.filter { it.id != markerId }
+        _state.value = _state.value.copy(markers = existing)
+    }
+
+    fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null) {
+        val config = _state.value.scanConfig
+        val spectrum = _state.value.currentSpectrum
+        
+        // Estimate amplitude if it is within the current range
+        val range = config.frequencyRange
+        val ampDbm = if (spectrum != null && freqHz >= range.startHz && freqHz <= range.endHz) {
+            val normalizedX = (freqHz - range.startHz).toFloat() / (range.endHz - range.startHz).toFloat()
+            val bin = (normalizedX * (spectrum.size - 1)).toInt().coerceIn(0, spectrum.size - 1)
+            spectrum[bin]
+        } else {
+            -100f
+        }
+
+        val existing = _state.value.markers
+        val markerIndex = (existing.maxOfOrNull { it.id } ?: 0) + 1
+        val finalColor = color ?: MarkerColor.entries[(markerIndex - 1) % MarkerColor.entries.size]
+
+        _state.value = _state.value.copy(
+            markers = existing + Marker(
+                id = markerIndex,
+                frequencyHz = freqHz.toDouble(),
+                amplitudeDbm = ampDbm,
+                label = if (label.isNotBlank()) label else "M$markerIndex",
+                color = finalColor,
+            )
         )
     }
 

@@ -73,7 +73,7 @@ fun MarkerOverlay(
             drawDiamond(center = Offset(x, y), radius = 4.dp.toPx(), color = color)
 
             // ---- Identifier label above ----
-            val idLabel = "M${marker.id}"
+            val idLabel = marker.label
             val idStyle = TextStyle(
                 color = Color.White,
                 fontSize = 9.sp, // 20% smaller
