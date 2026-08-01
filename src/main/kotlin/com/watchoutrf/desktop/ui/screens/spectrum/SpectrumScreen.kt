@@ -464,6 +464,17 @@ private fun SpectrumArea(
             .fillMaxSize()
             .padding(start = 2.dp),
     ) {
+        // ─── TV Channel Band Plan ───
+        TvChannelBandPlan(
+            startHz = config.frequencyRange.startHz,
+            endHz   = config.frequencyRange.endHz,
+            textMeasurer = textMeasurer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(20.dp)
+                .padding(start = 48.dp), // align with spectrum (past amplitude scale)
+        )
+
         // ─── Spectrum Plot + Amplitude Scale ───
         Row(
             modifier = Modifier
@@ -906,5 +917,80 @@ private fun ControlPanelMarkerItem(
                 )
             }
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════
+// TV CHANNEL BAND PLAN
+// Shows UHF TV channel numbers (14–51) above the spectrum.
+// Each channel is 6 MHz wide, starting at 470 MHz.
+// ════════════════════════════════════════════════════════
+@Composable
+private fun TvChannelBandPlan(
+    startHz: Long,
+    endHz: Long,
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    modifier: Modifier = Modifier,
+) {
+    // UHF TV channel plan (US/Americas): Ch14 starts at 470 MHz, each ch = 6 MHz
+    val chStart = 470_000_000L
+    val chWidth = 6_000_000L
+    val firstCh = 14
+    val lastCh  = 51  // 698 MHz = end of Ch51
+
+    val spanHz = endHz - startHz
+    if (spanHz <= 0) return
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val bgAlt1 = androidx.compose.ui.graphics.Color(0xFF1A1A2E)
+        val bgAlt2 = androidx.compose.ui.graphics.Color(0xFF16213E)
+        val borderCol = androidx.compose.ui.graphics.Color(0xFF2A2A4A)
+        val textCol   = androidx.compose.ui.graphics.Color(0xFF7A7A9E)
+        val occupiedCol = androidx.compose.ui.graphics.Color(0x22FF6B35) // subtle orange tint for TV ch
+
+        for (ch in firstCh..lastCh) {
+            val chFreqStart = chStart + (ch - firstCh) * chWidth
+            val chFreqEnd   = chFreqStart + chWidth
+
+            // Skip channels fully outside our view
+            if (chFreqEnd < startHz || chFreqStart > endHz) continue
+
+            val x1 = ((chFreqStart - startHz).toFloat() / spanHz * w).coerceIn(0f, w)
+            val x2 = ((chFreqEnd   - startHz).toFloat() / spanHz * w).coerceIn(0f, w)
+            val chW = x2 - x1
+            if (chW < 1f) continue
+
+            // Alternating background
+            val bg = if ((ch - firstCh) % 2 == 0) bgAlt1 else bgAlt2
+            drawRect(color = bg, topLeft = androidx.compose.ui.geometry.Offset(x1, 0f), size = androidx.compose.ui.geometry.Size(chW, h))
+
+            // Orange tint overlay
+            drawRect(color = occupiedCol, topLeft = androidx.compose.ui.geometry.Offset(x1, 0f), size = androidx.compose.ui.geometry.Size(chW, h))
+
+            // Right border
+            drawLine(color = borderCol, start = androidx.compose.ui.geometry.Offset(x2, 0f), end = androidx.compose.ui.geometry.Offset(x2, h), strokeWidth = 0.5.dp.toPx())
+
+            // Channel label — only if there's enough space
+            if (chW > 18.dp.toPx()) {
+                val label = "$ch"
+                val measured = textMeasurer.measure(
+                    text = label,
+                    style = androidx.compose.ui.text.TextStyle(
+                        color = textCol,
+                        fontSize = 8.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    )
+                )
+                val tx = x1 + (chW - measured.size.width) / 2f
+                val ty = (h - measured.size.height) / 2f
+                drawText(measured, topLeft = androidx.compose.ui.geometry.Offset(tx.coerceAtLeast(x1), ty))
+            }
+        }
+
+        // Top + bottom border
+        drawLine(color = borderCol, start = androidx.compose.ui.geometry.Offset(0f, 0f), end = androidx.compose.ui.geometry.Offset(w, 0f), strokeWidth = 0.5.dp.toPx())
+        drawLine(color = borderCol, start = androidx.compose.ui.geometry.Offset(0f, h), end = androidx.compose.ui.geometry.Offset(w, h), strokeWidth = 0.5.dp.toPx())
     }
 }
