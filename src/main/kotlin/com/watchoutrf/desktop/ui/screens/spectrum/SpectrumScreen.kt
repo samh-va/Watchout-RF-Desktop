@@ -139,7 +139,7 @@ private fun TopStatusBar(
     onNavigateBack: () -> Unit,
     onResolutionChanged: (Int) -> Unit,
 ) {
-    val resolutionOptions = listOf(512, 1024, 2048)
+    val resolutionOptions = listOf(1024, 2048, 4096)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,

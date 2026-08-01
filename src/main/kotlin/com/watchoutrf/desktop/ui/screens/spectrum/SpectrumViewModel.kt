@@ -76,9 +76,14 @@ class SpectrumViewModel {
                 val config = _state.value.scanConfig
                 val range  = config.frequencyRange
                 val spanHz = range.spanHz
-                
-                val chunkHz = 2_000_000L
-                val numHops = max(1, ceil(spanHz.toDouble() / chunkHz.toDouble()).toInt())
+
+                // ── FIXED SWEEP: use 80% of real SDR bandwidth as hop step ──
+                // RTL-SDR real BW is 2,048,000 Hz. We use 80% (1,638,400 Hz)
+                // as the hop advance so consecutive hops always overlap and
+                // no frequency falls into a blind gap between hops.
+                val sdrBwHz    = 2_048_000L
+                val usableBwHz = (sdrBwHz * 0.80).toLong()  // 1,638,400 Hz
+                val numHops    = max(1, ceil(spanHz.toDouble() / usableBwHz.toDouble()).toInt())
                 
                 val masterSpectrum = FloatArray(config.numBins) { -300f }
                 val hzPerUiBin = spanHz.toDouble() / config.numBins
@@ -88,12 +93,11 @@ class SpectrumViewModel {
                 for (hopIndex in 0 until numHops) {
                     if (!isActive || !_state.value.isScanning) break
                     if (_state.value.scanConfig.frequencyRange != range) break
-                    
-                    val hopStartHz = range.startHz + (hopIndex * chunkHz)
-                    var hopEndHz = hopStartHz + chunkHz
-                    if (hopEndHz > range.endHz) hopEndHz = range.endHz
-                    
-                    val hopCenterHz = (hopStartHz + hopEndHz) / 2
+
+                    // Center is the midpoint of the usable block for this hop
+                    val hopCenterHz = range.startHz + (hopIndex * usableBwHz) + (usableBwHz / 2)
+                    val hopStartHz  = range.startHz + (hopIndex * usableBwHz)
+                    val hopEndHz    = (hopStartHz + usableBwHz).coerceAtMost(range.endHz)
                     
                     val rawMagnitudes: FloatArray? = if (!_state.value.isDemoMode && sdrSource.isOpen) {
                         sdrSource.setFrequency(hopCenterHz)
@@ -116,12 +120,15 @@ class SpectrumViewModel {
                         sweepFailed = true
                         break
                     }
-                    
-                    val chunkStartHz = hopCenterHz - 1_024_000L
-                    val chunkEndHz = hopCenterHz + 1_024_000L
+
+                    // The SDR always captures ±sdrBwHz/2 around the center
+                    val chunkStartHz  = hopCenterHz - (sdrBwHz / 2)
+                    val chunkEndHz    = hopCenterHz + (sdrBwHz / 2)
                     val chunkHzPerBin = (chunkEndHz - chunkStartHz).toDouble() / rawMagnitudes.size
-                    
-                    val edgeTrim = (rawMagnitudes.size * 0.05).toInt()
+
+                    // FIXED: 2% edge trim (was 5% = 102 kHz loss per side)
+                    // Only suppress the minimal roll-off region at the very edge
+                    val edgeTrim = (rawMagnitudes.size * 0.02).toInt()
                     val dcCenter = rawMagnitudes.size / 2
                     val dcHalf   = (rawMagnitudes.size * 0.005).toInt().coerceAtLeast(3)
                     
@@ -129,24 +136,25 @@ class SpectrumViewModel {
                         if (i in (dcCenter - dcHalf)..(dcCenter + dcHalf)) continue
                         
                         val binFreqHz = chunkStartHz + (i * chunkHzPerBin)
-                        if (binFreqHz >= hopStartHz && binFreqHz <= hopEndHz) {
-                            if (binFreqHz >= range.startHz && binFreqHz <= range.endHz) {
-                                val uiBinIndex = ((binFreqHz - range.startHz) / hzPerUiBin).toInt()
-                                    .coerceIn(0, config.numBins - 1)
-                                
-                                if (rawMagnitudes[i] > masterSpectrum[uiBinIndex]) {
-                                    masterSpectrum[uiBinIndex] = rawMagnitudes[i]
-                                }
+                        if (binFreqHz >= range.startHz && binFreqHz <= range.endHz) {
+                            val uiBinIndex = ((binFreqHz - range.startHz) / hzPerUiBin).toInt()
+                                .coerceIn(0, config.numBins - 1)
+                            if (rawMagnitudes[i] > masterSpectrum[uiBinIndex]) {
+                                masterSpectrum[uiBinIndex] = rawMagnitudes[i]
                             }
                         }
                     }
                 } // end hop loop
 
                 if (sweepFailed) {
-                    _state.value = _state.value.copy(
-                        hwError = "Read error from dongle. Falling back to demo.",
-                        isDemoMode = true,
-                    )
+                    // Try to auto-reconnect before falling to demo mode
+                    val reconnected = tryReconnect()
+                    if (!reconnected) {
+                        _state.value = _state.value.copy(
+                            hwError = "Dongle disconnected. Falling back to demo mode.",
+                            isDemoMode = true,
+                        )
+                    }
                     delay(33L)
                     continue
                 }
@@ -242,6 +250,35 @@ class SpectrumViewModel {
         _state.value = _state.value.copy(isScanning = false)
         scanJob?.cancel()
         scanJob = null
+    }
+
+    /**
+     * Attempts to reconnect the RTL-SDR dongle up to [maxAttempts] times.
+     * Returns true if reconnection was successful, false if all attempts failed.
+     */
+    private suspend fun tryReconnect(maxAttempts: Int = 3): Boolean {
+        repeat(maxAttempts) { attempt ->
+            _state.value = _state.value.copy(
+                hwError = "Dongle disconnected. Reconnecting (${attempt + 1}/$maxAttempts)..."
+            )
+            sdrSource.close()
+            delay(500)
+            val err = sdrSource.open(0)
+            if (err == null) {
+                sdrSource.setGain(
+                    _state.value.scanConfig.gainMode,
+                    _state.value.scanConfig.manualGainDb,
+                )
+                sdrSource.startStream()
+                _state.value = _state.value.copy(
+                    hwError = null,
+                    isDemoMode = false,
+                )
+                return true
+            }
+            delay(1000)
+        }
+        return false
     }
 
     fun updateFrequencyRange(range: FrequencyRange) {
