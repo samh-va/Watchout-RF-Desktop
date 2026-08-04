@@ -40,6 +40,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
+import java.io.File
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
 
 import androidx.compose.runtime.collectAsState
 import com.watchoutrf.desktop.ui.components.controls.FrequencyRangeSelector
@@ -57,6 +60,7 @@ fun SpectrumScreen(
     val textMeasurer = rememberTextMeasurer()
 
     var showMarkerManager by remember { mutableStateOf(false) }
+    var exportMessage    by remember { mutableStateOf<String?>(null) }
 
     // Auto-start scanning on composition
     LaunchedEffect(Unit) {
@@ -70,6 +74,18 @@ fun SpectrumScreen(
             onUpdateMarkerLabel = viewModel::updateMarkerLabel,
             onRemoveMarker = viewModel::removeMarker,
             onAddMarker = viewModel::addMarkerManual,
+        )
+    }
+
+    // Export result snackbar dialog
+    exportMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { exportMessage = null },
+            title = { Text(if (msg.startsWith("Export failed") || msg.startsWith("No spectrum")) "Export Error" else "Export Successful") },
+            text  = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { exportMessage = null }) { Text("OK") }
+            },
         )
     }
 
@@ -113,6 +129,21 @@ fun SpectrumScreen(
                 onManageMarkers = { showMarkerManager = true },
                 onColorChange = viewModel::updateMarkerColor,
                 onUpdateMarkerLabel = viewModel::updateMarkerLabel,
+                onExportWwb = {
+                    // Open native save-file dialog on Desktop (AWT)
+                    val chooser = JFileChooser().apply {
+                        dialogTitle = "Export WWB7 Scan"
+                        fileFilter  = FileNameExtensionFilter("WWB7 CSV scan (*.csv)", "csv")
+                        selectedFile = File("WatchoutRF_scan.csv")
+                    }
+                    val result = chooser.showSaveDialog(null)
+                    if (result == JFileChooser.APPROVE_OPTION) {
+                        val file = chooser.selectedFile.let {
+                            if (it.extension.lowercase() == "csv") it else File(it.path + ".csv")
+                        }
+                        exportMessage = viewModel.exportWwb(file) ?: "Saved to:\n${file.absolutePath}"
+                    }
+                },
             )
 
             // ─── RIGHT SPECTRUM AREA ───
@@ -289,6 +320,7 @@ private fun ControlPanel(
     onManageMarkers: () -> Unit,
     onColorChange: (Int, MarkerColor) -> Unit,
     onUpdateMarkerLabel: (Int, String) -> Unit,
+    onExportWwb: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -432,7 +464,7 @@ private fun ControlPanel(
         OutlinedButton(
             onClick = onManageMarkers,
             colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
-            border = androidx.compose.foundation.BorderStroke(1.dp, 
+            border = androidx.compose.foundation.BorderStroke(1.dp,
                 brush = androidx.compose.ui.graphics.SolidColor(NeonGreen.copy(alpha = 0.5f)),
             ),
             shape = RoundedCornerShape(8.dp),
@@ -444,9 +476,43 @@ private fun ControlPanel(
             )
         }
 
+        // ─── Export WWB7 ───
+        val hasData = state.currentSpectrum != null || state.maxHoldSpectrum != null
+        Spacer(modifier = Modifier.height(16.dp))
+        HorizontalDivider(color = GridLine, thickness = 0.5.dp)
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = onExportWwb,
+            enabled = hasData,
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = Color(0xFFFF6B35),
+                disabledContentColor = TextSecondary,
+            ),
+            border = androidx.compose.foundation.BorderStroke(
+                width = 1.dp,
+                brush = if (hasData)
+                    androidx.compose.ui.graphics.SolidColor(Color(0xFFFF6B35).copy(alpha = 0.6f))
+                else
+                    androidx.compose.ui.graphics.SolidColor(GridLine),
+            ),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = "Export WWB7",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+
         Spacer(modifier = Modifier.height(8.dp))
-    }
-}
+    }  // end Column
+}  // end ControlPanel
 
 // ════════════════════════════════════════════════════════
 // RIGHT SPECTRUM AREA

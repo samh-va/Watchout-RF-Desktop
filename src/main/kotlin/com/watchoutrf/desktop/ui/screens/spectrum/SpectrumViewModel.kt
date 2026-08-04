@@ -5,6 +5,7 @@ import com.watchoutrf.desktop.data.dsp.PeakDetector
 import com.watchoutrf.desktop.data.dsp.SpectrumAverager
 import com.watchoutrf.desktop.data.dsp.SyntheticSignalGenerator
 import com.watchoutrf.desktop.data.sdr.DesktopSdrSource
+import com.watchoutrf.desktop.data.export.WwbExporter
 import com.watchoutrf.desktop.domain.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -421,6 +422,25 @@ class SpectrumViewModel {
 
     fun dismissHwError() {
         _state.value = _state.value.copy(hwError = null)
+    }
+
+    /**
+     * Exports the current spectrum (or Max Hold if active) to a WWB7-compatible CSV file.
+     * Returns null on success, or an error message on failure.
+     */
+    fun exportWwb(outputFile: java.io.File): String? {
+        val config   = _state.value.scanConfig
+        val range    = config.frequencyRange
+        val spectrum = _state.value.maxHoldSpectrum?.takeIf { config.maxHoldEnabled }
+            ?: _state.value.currentSpectrum
+            ?: return "No spectrum data available to export."
+
+        val spectrumData = SpectrumData(
+            frequencyStartHz = range.startHz,
+            frequencyEndHz   = range.endHz,
+            magnitudes       = spectrum,
+        )
+        return WwbExporter.export(spectrumData, outputFile)
     }
 
     fun onCleared() {
