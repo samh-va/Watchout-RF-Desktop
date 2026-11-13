@@ -270,14 +270,16 @@ private fun AddMarkerSection(
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
-                    try {
-                        val mhz = freqText.toFloat()
-                        val hz = (mhz * 1_000_000.0).toLong()
+                    // Accept both "566.35" and "566,35"; parse as Double so that
+                    // e.g. 566.350 MHz does not become 566.349975 MHz.
+                    val mhz = freqText.trim().replace(',', '.').toDoubleOrNull()
+                    if (mhz == null || mhz <= 0.0) {
+                        errorText = "Invalid frequency"
+                    } else {
+                        val hz = Math.round(mhz * 1_000_000.0)
                         onAddMarker(hz, labelText, selectedColor)
                         freqText = ""
                         labelText = ""
-                    } catch (e: Exception) {
-                        errorText = "Invalid frequency"
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DeepBlack),

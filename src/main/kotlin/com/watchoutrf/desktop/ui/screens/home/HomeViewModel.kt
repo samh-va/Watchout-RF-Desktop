@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -50,7 +51,8 @@ class HomeViewModel {
     }
 
     fun retryConnection() {
-        checkDevice()
+        // USB enumeration can block for a moment: keep it off the UI thread
+        scope.launch { checkDevice() }
     }
 
     private fun checkDevice() {
@@ -68,19 +70,25 @@ class HomeViewModel {
                 serialNumber = null
             )
             
-            _uiState.value = _uiState.value.copy(
-                isDeviceConnected = true,
-                statusText = "Conectado",
-                deviceInfo = info,
-                errorMessage = null
-            )
+            _uiState.update {
+                it.copy(
+                    isDeviceConnected = true,
+                    statusText = "Conectado",
+                    deviceInfo = info,
+                    errorMessage = null
+                )
+            }
         } else {
-            _uiState.value = _uiState.value.copy(
-                isDeviceConnected = false,
-                statusText = if (count == -1) "Error de Librería" else "Desconectado",
-                deviceInfo = null,
-                errorMessage = if (count == -1) "No se pudo cargar librtlsdr." else null
-            )
+            _uiState.update {
+                it.copy(
+                    isDeviceConnected = false,
+                    statusText = if (count == -1) "Error de Librería" else "Desconectado",
+                    deviceInfo = null,
+                    errorMessage = if (count == -1) {
+                        "No se pudo cargar librtlsdr. Instálala con: brew install librtlsdr"
+                    } else null
+                )
+            }
         }
     }
 
