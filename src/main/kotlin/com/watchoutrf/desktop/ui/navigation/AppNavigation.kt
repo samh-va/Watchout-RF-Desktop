@@ -18,6 +18,14 @@ fun AppNavigation() {
     val homeViewModel = remember { HomeViewModel() }
     val spectrumViewModel = remember { SpectrumViewModel() }
 
+    // Release the dongle and stop background work when the window is closed
+    DisposableEffect(Unit) {
+        onDispose {
+            homeViewModel.stopUsbMonitoring()
+            spectrumViewModel.onCleared()
+        }
+    }
+
     when (currentScreen) {
         Screen.Home -> {
             HomeScreen(

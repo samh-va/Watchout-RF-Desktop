@@ -2,6 +2,7 @@ package com.watchoutrf.desktop.data.export
 
 import com.watchoutrf.desktop.domain.model.SpectrumData
 import java.io.File
+import java.util.Locale
 import kotlin.math.ceil
 
 /**
@@ -60,13 +61,14 @@ object WwbExporter {
                 if (magnitudes[j] > peakDbm) peakDbm = magnitudes[j]
             }
 
-            // Frequency at center of this window
-            val windowCenterBin = i + (windowEnd - i) / 2
-            val freqHz = data.frequencyAtBin(windowCenterBin)
+            // Frequency at the centre of this window (bins i until windowEnd)
+            val freqHz = data.frequencyStartHz + (i + windowEnd) / 2.0 * binWidthHz
             val freqMhz = freqHz / 1_000_000.0
 
-            // WWB7 expects: "470.025,-95.5" (3 decimal places for MHz, 1 for dBm)
-            lines.add("%.3f,%.1f".format(freqMhz, peakDbm))
+            // WWB7 expects: "470.025,-95.5" (3 decimal places for MHz, 1 for dBm).
+            // Locale.US is mandatory: locales that use a decimal comma (es, de, fr…)
+            // would otherwise produce "470,025,-95,5", which WWB cannot parse.
+            lines.add(String.format(Locale.US, "%.3f,%.1f", freqMhz, peakDbm))
 
             i += decimFactor
         }

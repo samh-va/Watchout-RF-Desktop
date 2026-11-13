@@ -8,8 +8,6 @@ import com.watchoutrf.desktop.data.dsp.FftProcessor
 import com.watchoutrf.desktop.data.dsp.WindowType
 import com.watchoutrf.desktop.domain.model.FrequencyRange
 import com.watchoutrf.desktop.domain.model.GainMode
-import kotlin.math.log10
-import kotlin.math.pow
 
 class DesktopSdrSource {
     private val tag = "DesktopSdrSource"
@@ -22,17 +20,23 @@ class DesktopSdrSource {
 
     fun open(deviceIndex: Int = 0, sampleRate: Int = 2048000): String? {
         close()
+        val lib = RtlSdrLibrary.instanceOrNull ?: return "LIBRTLSDR_NOT_INSTALLED"
         val ptrRef = PointerByReference()
-        val res = RtlSdrLibrary.INSTANCE.rtlsdr_open(ptrRef, deviceIndex)
+        val res = lib.rtlsdr_open(ptrRef, deviceIndex)
         if (res < 0) return "FAIL_OPEN_LIBRTLSDR_$res"
-        
-        devPtr = ptrRef.value
-        
+
+        val dev = ptrRef.value ?: return "FAIL_OPEN_LIBRTLSDR_NULL"
+
         // Init typical parameters
-        RtlSdrLibrary.INSTANCE.rtlsdr_set_sample_rate(devPtr!!, sampleRate)
+        val rateRes = lib.rtlsdr_set_sample_rate(dev, sampleRate)
+        if (rateRes < 0) {
+            lib.rtlsdr_close(dev)
+            return "FAIL_SAMPLE_RATE_$rateRes"
+        }
         // Auto gain by default
-        RtlSdrLibrary.INSTANCE.rtlsdr_set_tuner_gain_mode(devPtr!!, 0)
-        
+        lib.rtlsdr_set_tuner_gain_mode(dev, 0)
+
+        devPtr = dev
         return null
     }
 
@@ -77,7 +81,7 @@ class DesktopSdrSource {
         val dev = devPtr ?: return null
 
         val bytesPerBlock = bins * 2
-        val linearAccum = FloatArray(bins) { 0f }
+        val linearAccum = FloatArray(bins)
         var validReads = 0
         
         val iqBuffer = ByteArray(bytesPerBlock)
@@ -92,12 +96,8 @@ class DesktopSdrSource {
                 return@repeat
             }
             
-            val spectrum = FftProcessor.processIqToSpectrum(iqBuffer, bins, windowType)
-            
-            // Accumulate in linear power
-            for (j in 0 until bins) {
-                linearAccum[j] += 10.0.pow(spectrum[j].toDouble() / 10.0).toFloat()
-            }
+            // Accumulate directly in linear power: avoids a dB -> linear round trip per bin
+            FftProcessor.accumulateIqPower(iqBuffer, bins, windowType, linearAccum)
             validReads++
         }
 
@@ -106,7 +106,7 @@ class DesktopSdrSource {
         val result = FloatArray(bins)
         for (j in 0 until bins) {
             val avgLinear = linearAccum[j] / validReads.toFloat()
-            result[j] = (10.0 * log10(avgLinear.toDouble().coerceAtLeast(1e-20))).toFloat()
+            result[j] = FftProcessor.powerToDbm(avgLinear)
         }
 
         return result

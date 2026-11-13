@@ -10,17 +10,25 @@ import com.watchoutrf.desktop.domain.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.ceil
 import kotlin.math.max
 
 class SpectrumViewModel {
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow(SpectrumState())
     val state: StateFlow<SpectrumState> = _state.asStateFlow()
 
@@ -29,42 +37,58 @@ class SpectrumViewModel {
     private val averager = SpectrumAverager()
     private val peakDetector = PeakDetector()
 
+    /**
+     * Serialises every access to the dongle (open / close / tune / read / gain).
+     * librtlsdr device handles are not safe to use from several threads at once.
+     */
+    private val hwMutex = Mutex()
+
     private var scanJob: Job? = null
     private var frameCount = 0
     private var fpsTimestamp = System.currentTimeMillis()
 
     init {
-        // En macOS Desktop, si abrimos esta pantalla, intentamos conectar al dispositivo 0
-        if (RtlSdr.getDeviceCount() > 0) {
-            val deviceName = RtlSdr.getDeviceName(0) ?: "SDR Dongle"
-            val error = sdrSource.open(0)
-            if (error == null) {
-                sdrSource.setGain(
-                    _state.value.scanConfig.gainMode,
-                    _state.value.scanConfig.manualGainDb,
-                )
-                sdrSource.startStream()
-                
-                _state.value = _state.value.copy(
-                    isDemoMode = false,
-                    connectedDeviceName = deviceName,
-                    hwError = null
-                )
-            } else {
-                _state.value = _state.value.copy(
+        // Opening the dongle takes a moment (USB + tuner init): keep it off the UI thread.
+        scope.launch(Dispatchers.IO) { connectIfAvailable() }
+    }
+
+    /**
+     * Opens dongle 0 if one is attached and we are not already using it.
+     * Safe to call repeatedly — this is what makes hot-plugging work: a dongle
+     * connected after the app was launched is picked up by the scan loop.
+     *
+     * @return true when hardware is open after the call.
+     */
+    private suspend fun connectIfAvailable(): Boolean = hwMutex.withLock {
+        if (sdrSource.isOpen) return@withLock true
+        if (RtlSdr.getDeviceCount() <= 0) return@withLock false
+
+        val deviceName = RtlSdr.getDeviceName(0) ?: "SDR Dongle"
+        val error = sdrSource.open(0)
+        if (error == null) {
+            val config = _state.value.scanConfig
+            sdrSource.setGain(config.gainMode, config.manualGainDb)
+            sdrSource.startStream()
+            _state.update {
+                it.copy(isDemoMode = false, connectedDeviceName = deviceName, hwError = null)
+            }
+            true
+        } else {
+            _state.update {
+                it.copy(
                     isDemoMode = true,
-                    hwError = "Error initializing $deviceName: $error"
+                    connectedDeviceName = null,
+                    hwError = "Error initializing $deviceName: $error",
                 )
             }
-        } else {
-            _state.value = _state.value.copy(isDemoMode = true)
+            false
         }
     }
 
     fun startScanning() {
         if (scanJob?.isActive == true) return
 
-        _state.value = _state.value.copy(isScanning = true, hwError = null)
+        _state.update { it.copy(isScanning = true, hwError = null) }
         frameCount = 0
         fpsTimestamp = System.currentTimeMillis()
 
@@ -72,11 +96,38 @@ class SpectrumViewModel {
             val waterfallBuffer = mutableListOf<FloatArray>()
             waterfallBuffer.addAll(_state.value.waterfallHistory)
             var peakFrameCounter = 0
+            var lastRange: FrequencyRange? = null
+            var lastNumBins = -1
+            var lastHotplugCheck = 0L
 
             while (isActive && _state.value.isScanning) {
+                val sweepStartMs = System.currentTimeMillis()
                 val config = _state.value.scanConfig
                 val range  = config.frequencyRange
                 val spanHz = range.spanHz
+
+                // The range or resolution changed since the previous sweep: everything
+                // accumulated so far (average, max hold, waterfall) describes another
+                // frequency axis and must not be mixed with the new data.
+                if (range != lastRange || config.numBins != lastNumBins) {
+                    if (lastRange != null) {
+                        averager.reset()
+                        waterfallBuffer.clear()
+                    }
+                    peakFrameCounter = 0
+                    lastRange = range
+                    lastNumBins = config.numBins
+                }
+
+                // Hot-plug: while in demo mode, periodically look for a dongle.
+                if (_state.value.isDemoMode && sweepStartMs - lastHotplugCheck >= HOTPLUG_POLL_MS) {
+                    lastHotplugCheck = sweepStartMs
+                    if (connectIfAvailable()) {
+                        // Switching source: do not blend synthetic data with real data
+                        averager.reset()
+                        waterfallBuffer.clear()
+                    }
+                }
 
                 // ── FIXED SWEEP: use 80% of real SDR bandwidth as hop step ──
                 // RTL-SDR real BW is 2,048,000 Hz. We use 80% (1,638,400 Hz)
@@ -90,10 +141,17 @@ class SpectrumViewModel {
                 val hzPerUiBin = spanHz.toDouble() / config.numBins
                 
                 var sweepFailed = false
+                var sweepAborted = false
 
                 for (hopIndex in 0 until numHops) {
-                    if (!isActive || !_state.value.isScanning) break
-                    if (_state.value.scanConfig.frequencyRange != range) break
+                    val live = _state.value
+                    if (!isActive || !live.isScanning ||
+                        live.scanConfig.frequencyRange != range ||
+                        live.scanConfig.numBins != config.numBins
+                    ) {
+                        sweepAborted = true
+                        break
+                    }
 
                     // Center is the midpoint of the usable block for this hop
                     val hopCenterHz = range.startHz + (hopIndex * usableBwHz) + (usableBwHz / 2)
@@ -101,12 +159,17 @@ class SpectrumViewModel {
                     val hopEndHz    = (hopStartHz + usableBwHz).coerceAtMost(range.endHz)
                     
                     val rawMagnitudes: FloatArray? = if (!_state.value.isDemoMode && sdrSource.isOpen) {
-                        sdrSource.setFrequency(hopCenterHz)
-                        delay(10) // wait for PLL lock
-                        sdrSource.flush()
-                        
-                        val numReads = if (spanHz > 50_000_000L) 2 else 4
-                        sdrSource.readSpectrum(1024, numReads)
+                        hwMutex.withLock {
+                            if (!sdrSource.setFrequency(hopCenterHz)) {
+                                null // tuner rejected the frequency or the dongle is gone
+                            } else {
+                                delay(10) // wait for PLL lock
+                                sdrSource.flush()
+
+                                val numReads = if (spanHz > 50_000_000L) 2 else 4
+                                sdrSource.readSpectrum(1024, numReads)
+                            }
+                        }
                     } else {
                         // Demo mode
                         syntheticGenerator.generateSpectrum(
@@ -151,14 +214,26 @@ class SpectrumViewModel {
                     // Try to auto-reconnect before falling to demo mode
                     val reconnected = tryReconnect()
                     if (!reconnected) {
-                        _state.value = _state.value.copy(
-                            hwError = "Dongle disconnected. Falling back to demo mode.",
-                            isDemoMode = true,
-                        )
+                        _state.update {
+                            it.copy(
+                                hwError = "Dongle disconnected. Falling back to demo mode.",
+                                isDemoMode = true,
+                                connectedDeviceName = null,
+                            )
+                        }
                     }
-                    delay(33L)
+                    // Whatever comes next is a different source (or a re-initialised tuner)
+                    averager.reset()
+                    waterfallBuffer.clear()
+                    lastHotplugCheck = System.currentTimeMillis()
+                    delay(FRAME_INTERVAL_MS)
                     continue
                 }
+
+                // A sweep that was interrupted (stop pressed, range or resolution changed)
+                // is only partially filled. Publishing it would seed the average and the
+                // max-hold trace with garbage that belongs to the previous settings.
+                if (sweepAborted) continue
                 
                 // Gap filling
                 var gapStart = -1
@@ -194,10 +269,10 @@ class SpectrumViewModel {
                 }
 
                 val averaged = averager.average(smoothed, config.averagingFactor)
-                val maxHold = if (config.maxHoldEnabled) averager.updateMaxHold(averaged) else _state.value.maxHoldSpectrum
+                val maxHold = if (_state.value.scanConfig.maxHoldEnabled) averager.updateMaxHold(averaged) else null
 
                 waterfallBuffer.add(0, averaged.copyOf())
-                if (waterfallBuffer.size > 100) waterfallBuffer.removeAt(waterfallBuffer.lastIndex)
+                if (waterfallBuffer.size > MAX_WATERFALL_HISTORY) waterfallBuffer.removeAt(waterfallBuffer.lastIndex)
 
                 peakFrameCounter++
                 val detectedPeaks = if (peakFrameCounter >= 10) {
@@ -229,26 +304,39 @@ class SpectrumViewModel {
                     _state.value.framesPerSecond
                 }
 
-                _state.value = _state.value.copy(
-                    currentSpectrum   = averaged,
-                    maxHoldSpectrum   = maxHold,
-                    waterfallHistory  = waterfallBuffer.toList(),
-                    autoDetectedPeaks = detectedPeaks,
-                    framesPerSecond   = fps,
-                )
+                val history = waterfallBuffer.toList()
+                _state.update { cur ->
+                    // The user may have changed range/resolution while this sweep was being
+                    // post-processed; in that case the frame no longer matches the axes.
+                    if (cur.scanConfig.frequencyRange != range || cur.scanConfig.numBins != config.numBins) {
+                        cur
+                    } else {
+                        cur.copy(
+                            currentSpectrum   = averaged,
+                            maxHoldSpectrum   = if (cur.scanConfig.maxHoldEnabled) maxHold else null,
+                            waterfallHistory  = history,
+                            autoDetectedPeaks = detectedPeaks,
+                            framesPerSecond   = fps,
+                        )
+                    }
+                }
 
                 if (config.scanMode == ScanMode.SINGLE) {
-                    _state.value = _state.value.copy(isScanning = false)
+                    _state.update { it.copy(isScanning = false) }
                     break
                 }
 
-                delay(10)
+                // Pace the loop. Hardware sweeps take far longer than a frame, but demo
+                // sweeps are instantaneous and would otherwise spin a CPU core and
+                // re-render the UI hundreds of times per second.
+                val sweepMs = System.currentTimeMillis() - sweepStartMs
+                delay((FRAME_INTERVAL_MS - sweepMs).coerceAtLeast(MIN_SWEEP_GAP_MS))
             }
         }
     }
 
     fun stopScanning() {
-        _state.value = _state.value.copy(isScanning = false)
+        _state.update { it.copy(isScanning = false) }
         scanJob?.cancel()
         scanJob = null
     }
@@ -259,90 +347,94 @@ class SpectrumViewModel {
      */
     private suspend fun tryReconnect(maxAttempts: Int = 3): Boolean {
         repeat(maxAttempts) { attempt ->
-            _state.value = _state.value.copy(
-                hwError = "Dongle disconnected. Reconnecting (${attempt + 1}/$maxAttempts)..."
-            )
-            sdrSource.close()
-            delay(500)
-            val err = sdrSource.open(0)
-            if (err == null) {
-                sdrSource.setGain(
-                    _state.value.scanConfig.gainMode,
-                    _state.value.scanConfig.manualGainDb,
-                )
-                sdrSource.startStream()
-                _state.value = _state.value.copy(
-                    hwError = null,
-                    isDemoMode = false,
-                )
-                return true
+            _state.update {
+                it.copy(hwError = "Dongle disconnected. Reconnecting (${attempt + 1}/$maxAttempts)...")
             }
+            hwMutex.withLock { sdrSource.close() }
+            delay(500)
+            // connectIfAvailable() clears hwError and leaves demo mode on success
+            if (connectIfAvailable()) return true
             delay(1000)
         }
+        // Make sure a half-dead handle is not kept around
+        hwMutex.withLock { sdrSource.close() }
         return false
     }
 
+    // NOTE: every mutation below goes through _state.update { }. The scan loop publishes
+    // frames from a background thread, so a read-copy-assign on the state flow's value can
+    // silently overwrite a change made in between (a new marker, a toggled option…).
+
     fun updateFrequencyRange(range: FrequencyRange) {
+        _state.update {
+            it.copy(
+                scanConfig = it.scanConfig.copy(frequencyRange = range),
+                currentSpectrum = null,
+                maxHoldSpectrum = null,
+                waterfallHistory = emptyList(),
+                autoDetectedPeaks = emptyList(),
+                markers = emptyList(),
+            )
+        }
         averager.reset()
-        _state.value = _state.value.copy(
-            scanConfig = _state.value.scanConfig.copy(frequencyRange = range),
-            currentSpectrum = null,
-            maxHoldSpectrum = null,
-            waterfallHistory = emptyList(),
-            autoDetectedPeaks = emptyList(),
-            markers = emptyList(),
-        )
     }
 
     fun updateGainMode(mode: GainMode) {
-        _state.value = _state.value.copy(
-            scanConfig = _state.value.scanConfig.copy(gainMode = mode),
-        )
+        _state.update { it.copy(scanConfig = it.scanConfig.copy(gainMode = mode)) }
         if (!_state.value.isDemoMode && sdrSource.isOpen) {
             scope.launch(Dispatchers.IO) {
-                sdrSource.setGain(mode, _state.value.scanConfig.manualGainDb)
+                hwMutex.withLock {
+                    sdrSource.setGain(mode, _state.value.scanConfig.manualGainDb)
+                }
             }
         }
     }
 
     fun updateScanMode(mode: ScanMode) {
-        _state.value = _state.value.copy(
-            scanConfig = _state.value.scanConfig.copy(scanMode = mode),
-        )
+        _state.update { it.copy(scanConfig = it.scanConfig.copy(scanMode = mode)) }
     }
 
     fun updateNumBins(numBins: Int) {
+        _state.update {
+            it.copy(
+                scanConfig = it.scanConfig.copy(numBins = numBins),
+                currentSpectrum = null,
+                maxHoldSpectrum = null,
+                // Rows of another width cannot be shown on the same waterfall
+                waterfallHistory = emptyList(),
+                autoDetectedPeaks = emptyList(),
+            )
+        }
         averager.reset()
-        _state.value = _state.value.copy(
-            scanConfig = _state.value.scanConfig.copy(numBins = numBins),
-            currentSpectrum = null,
-            maxHoldSpectrum = null,
-        )
     }
 
     fun updateMarkerColor(markerId: Int, color: MarkerColor) {
-        val existing = _state.value.markers.map {
-            if (it.id == markerId) it.copy(color = color) else it
+        _state.update { cur ->
+            cur.copy(markers = cur.markers.map { if (it.id == markerId) it.copy(color = color) else it })
         }
-        _state.value = _state.value.copy(markers = existing)
     }
 
     fun toggleMaxHold() {
-        val config = _state.value.scanConfig
-        val newEnabled = !config.maxHoldEnabled
-        _state.value = _state.value.copy(
-            scanConfig = config.copy(maxHoldEnabled = newEnabled),
-            maxHoldSpectrum = if (!newEnabled) null else _state.value.maxHoldSpectrum,
-        )
+        var enabled = false
+        _state.update { cur ->
+            enabled = !cur.scanConfig.maxHoldEnabled
+            cur.copy(
+                scanConfig = cur.scanConfig.copy(maxHoldEnabled = enabled),
+                maxHoldSpectrum = if (enabled) cur.maxHoldSpectrum else null,
+            )
+        }
+        // Start from a clean trace next time it is enabled instead of resurrecting
+        // maxima recorded before it was switched off.
+        if (!enabled) averager.resetMaxHold()
     }
 
     fun resetMaxHold() {
-        averager.reset()
-        _state.value = _state.value.copy(maxHoldSpectrum = null)
+        averager.resetMaxHold()
+        _state.update { it.copy(maxHoldSpectrum = null) }
     }
 
     fun updateActiveMarker(normalizedX: Float?) {
-        _state.value = _state.value.copy(activeMarkerX = normalizedX)
+        _state.update { it.copy(activeMarkerX = normalizedX) }
     }
 
     fun addMarker(normalizedX: Float) {
@@ -357,38 +449,35 @@ class SpectrumViewModel {
             -100f
         }
 
-        val existing    = _state.value.markers
-        val markerIndex = existing.size + 1
-        val color       = MarkerColor.entries[(markerIndex - 1) % MarkerColor.entries.size]
-
-        _state.value = _state.value.copy(
-            markers = existing + Marker(
-                id           = markerIndex,
-                frequencyHz  = freqHz.toDouble(),
-                amplitudeDbm = ampDbm,
-                label        = "M$markerIndex",
-                color        = color,
-            ),
-        )
+        _state.update { cur ->
+            // max+1 (not size+1): ids must stay unique after a marker was removed,
+            // otherwise editing/removing one marker would also hit its twin.
+            val markerIndex = (cur.markers.maxOfOrNull { it.id } ?: 0) + 1
+            val color       = MarkerColor.entries[(markerIndex - 1) % MarkerColor.entries.size]
+            cur.copy(
+                markers = cur.markers + Marker(
+                    id           = markerIndex,
+                    frequencyHz  = freqHz.toDouble(),
+                    amplitudeDbm = ampDbm,
+                    label        = "M$markerIndex",
+                    color        = color,
+                ),
+            )
+        }
     }
 
     fun clearMarkers() {
-        _state.value = _state.value.copy(
-            markers = emptyList(),
-            activeMarkerX = null
-        )
+        _state.update { it.copy(markers = emptyList(), activeMarkerX = null) }
     }
 
     fun updateMarkerLabel(markerId: Int, newLabel: String) {
-        val existing = _state.value.markers.map {
-            if (it.id == markerId) it.copy(label = newLabel) else it
+        _state.update { cur ->
+            cur.copy(markers = cur.markers.map { if (it.id == markerId) it.copy(label = newLabel) else it })
         }
-        _state.value = _state.value.copy(markers = existing)
     }
 
     fun removeMarker(markerId: Int) {
-        val existing = _state.value.markers.filter { it.id != markerId }
-        _state.value = _state.value.copy(markers = existing)
+        _state.update { cur -> cur.copy(markers = cur.markers.filter { it.id != markerId }) }
     }
 
     fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null) {
@@ -405,23 +494,23 @@ class SpectrumViewModel {
             -100f
         }
 
-        val existing = _state.value.markers
-        val markerIndex = (existing.maxOfOrNull { it.id } ?: 0) + 1
-        val finalColor = color ?: MarkerColor.entries[(markerIndex - 1) % MarkerColor.entries.size]
-
-        _state.value = _state.value.copy(
-            markers = existing + Marker(
-                id = markerIndex,
-                frequencyHz = freqHz.toDouble(),
-                amplitudeDbm = ampDbm,
-                label = if (label.isNotBlank()) label else "M$markerIndex",
-                color = finalColor,
+        _state.update { cur ->
+            val markerIndex = (cur.markers.maxOfOrNull { it.id } ?: 0) + 1
+            val finalColor = color ?: MarkerColor.entries[(markerIndex - 1) % MarkerColor.entries.size]
+            cur.copy(
+                markers = cur.markers + Marker(
+                    id = markerIndex,
+                    frequencyHz = freqHz.toDouble(),
+                    amplitudeDbm = ampDbm,
+                    label = if (label.isNotBlank()) label else "M$markerIndex",
+                    color = finalColor,
+                )
             )
-        )
+        }
     }
 
     fun dismissHwError() {
-        _state.value = _state.value.copy(hwError = null)
+        _state.update { it.copy(hwError = null) }
     }
 
     /**
@@ -443,8 +532,28 @@ class SpectrumViewModel {
         return WwbExporter.export(spectrumData, outputFile)
     }
 
+    /**
+     * Stops the sweep and releases the dongle. Call once when the application exits:
+     * closing the handle while a read is still in flight can crash inside librtlsdr,
+     * so we wait (briefly) for the scan loop to finish first.
+     */
     fun onCleared() {
+        val job = scanJob
         stopScanning()
-        sdrSource.close()
+        runBlocking {
+            withTimeoutOrNull(SHUTDOWN_TIMEOUT_MS) {
+                job?.cancelAndJoin()
+                hwMutex.withLock { sdrSource.close() }
+            }
+        }
+        scope.cancel()
+    }
+
+    private companion object {
+        const val FRAME_INTERVAL_MS     = 33L     // ~30 sweeps/s upper bound (demo mode)
+        const val MIN_SWEEP_GAP_MS      = 5L
+        const val HOTPLUG_POLL_MS       = 3_000L  // how often demo mode looks for a dongle
+        const val MAX_WATERFALL_HISTORY = 100
+        const val SHUTDOWN_TIMEOUT_MS   = 2_000L
     }
 }
