@@ -3,6 +3,7 @@ package com.watchoutrf.desktop.ui.screens.spectrum
 import com.watchoutrf.desktop.RtlSdr
 import com.watchoutrf.desktop.data.dsp.PeakDetector
 import com.watchoutrf.desktop.data.dsp.SpectrumAverager
+import com.watchoutrf.desktop.data.dsp.SweepTrace
 import com.watchoutrf.desktop.data.dsp.SyntheticSignalGenerator
 import com.watchoutrf.desktop.data.sdr.DesktopSdrSource
 import com.watchoutrf.desktop.data.export.WwbExporter
@@ -137,7 +138,10 @@ class SpectrumViewModel {
                 val usableBwHz = (sdrBwHz * 0.80).toLong()  // 1,638,400 Hz
                 val numHops    = max(1, ceil(spanHz.toDouble() / usableBwHz.toDouble()).toInt())
                 
-                val masterSpectrum = FloatArray(config.numBins) { -300f }
+                val masterSpectrum = FloatArray(config.numBins) { SweepTrace.EMPTY }
+                // Average as it stood before this sweep, for the in-progress previews
+                val previousAverage = averager.current()
+                var lastPreviewMs = System.currentTimeMillis()
                 val hzPerUiBin = spanHz.toDouble() / config.numBins
                 
                 var sweepFailed = false
@@ -208,6 +212,29 @@ class SpectrumViewModel {
                             }
                         }
                     }
+
+                    // Show this hop right away instead of waiting for the whole sweep.
+                    // A full sweep over a wide range takes seconds on real hardware;
+                    // the trace is redrawn as the sweep advances across the span.
+                    val nowMs = System.currentTimeMillis()
+                    if (hopIndex < numHops - 1 && nowMs - lastPreviewMs >= PREVIEW_INTERVAL_MS) {
+                        lastPreviewMs = nowMs
+                        val coveredBins = ((hopEndHz - range.startHz) / hzPerUiBin).toInt()
+                        val preview = SweepTrace.preview(
+                            raw             = masterSpectrum,
+                            coveredBins     = coveredBins,
+                            previousAverage = previousAverage,
+                            alpha           = config.averagingFactor,
+                            floorDbm        = config.referenceLevel - config.dynamicRange,
+                        )
+                        _state.update { cur ->
+                            if (cur.scanConfig.frequencyRange != range || cur.scanConfig.numBins != config.numBins) {
+                                cur
+                            } else {
+                                cur.copy(currentSpectrum = preview)
+                            }
+                        }
+                    }
                 } // end hop loop
 
                 if (sweepFailed) {
@@ -235,38 +262,8 @@ class SpectrumViewModel {
                 // max-hold trace with garbage that belongs to the previous settings.
                 if (sweepAborted) continue
                 
-                // Gap filling
-                var gapStart = -1
-                for (i in masterSpectrum.indices) {
-                    if (masterSpectrum[i] <= -299.9f) {
-                        if (gapStart < 0) gapStart = i
-                    } else {
-                        if (gapStart >= 0) {
-                            val leftVal = if (gapStart > 0) masterSpectrum[gapStart - 1] else masterSpectrum[i]
-                            val rightVal = masterSpectrum[i]
-                            val gapLen = i - gapStart
-                            for (g in 0 until gapLen) {
-                                val t = (g + 1).toFloat() / (gapLen + 1).toFloat()
-                                masterSpectrum[gapStart + g] = leftVal + (rightVal - leftVal) * t
-                            }
-                            gapStart = -1
-                        }
-                    }
-                }
-                if (gapStart >= 0) {
-                    val leftVal = if (gapStart > 0) masterSpectrum[gapStart - 1] else -100f
-                    for (g in gapStart until masterSpectrum.size) {
-                        masterSpectrum[g] = leftVal
-                    }
-                }
-                
-                // Smoothing
-                val smoothed = FloatArray(masterSpectrum.size)
-                for (i in masterSpectrum.indices) {
-                    val left  = if (i > 0) masterSpectrum[i - 1] else masterSpectrum[i]
-                    val right = if (i < masterSpectrum.size - 1) masterSpectrum[i + 1] else masterSpectrum[i]
-                    smoothed[i] = (left + masterSpectrum[i] + right) / 3f
-                }
+                // Fill the bins no hop wrote to (DC notches) and smooth the trace
+                val smoothed = SweepTrace.finish(masterSpectrum)
 
                 val averaged = averager.average(smoothed, config.averagingFactor)
                 val maxHold = if (_state.value.scanConfig.maxHoldEnabled) averager.updateMaxHold(averaged) else null
@@ -552,6 +549,7 @@ class SpectrumViewModel {
     private companion object {
         const val FRAME_INTERVAL_MS     = 33L     // ~30 sweeps/s upper bound (demo mode)
         const val MIN_SWEEP_GAP_MS      = 5L
+        const val PREVIEW_INTERVAL_MS   = 50L     // in-sweep redraws, at most ~20 per second
         const val HOTPLUG_POLL_MS       = 3_000L  // how often demo mode looks for a dongle
         const val MAX_WATERFALL_HISTORY = 100
         const val SHUTDOWN_TIMEOUT_MS   = 2_000L

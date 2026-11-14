@@ -172,3 +172,26 @@ class SpectrumAveragerTest {
         assertContentEquals(floatArrayOf(-10f, -20f, -30f), averager.average(floatArrayOf(-10f, -20f, -30f), 0.9f))
     }
 }
+
+class SweepTraceTest {
+    private val e = com.watchoutrf.desktop.data.dsp.SweepTrace.EMPTY
+
+    @Test
+    fun `fills gaps by interpolation then smooths`() {
+        val out = com.watchoutrf.desktop.data.dsp.SweepTrace.finish(floatArrayOf(-90f, e, e, -60f, -60f))
+        // filled: -90, -80, -70, -60, -60 -> 3-bin mean with replicated edges
+        assertContentEquals(floatArrayOf(-86.666664f, -80f, -70f, -63.333332f, -60f), out)
+    }
+
+    @Test
+    fun `preview keeps unswept bins and blends swept ones like the averager`() {
+        val raw = floatArrayOf(-50f, -50f, e, e)
+        val previous = floatArrayOf(-90f, -90f, -90f, -90f)
+        val out = com.watchoutrf.desktop.data.dsp.SweepTrace.preview(raw, 2, previous, 0.5f, -120f)
+        assertContentEquals(floatArrayOf(-70f, -70f, -90f, -90f), out)
+
+        val first = com.watchoutrf.desktop.data.dsp.SweepTrace.preview(raw, 2, null, 0.5f, -120f)
+        assertContentEquals(floatArrayOf(-50f, -50f, -120f, -120f), first)
+        assertContentEquals(floatArrayOf(-50f, -50f, e, e), raw) // input untouched
+    }
+}

@@ -4,3 +4,6 @@ build/
 .idea/
 .kotlin/
 .DS_Store
+# Copied from Homebrew by scripts/bundle_native_libs.sh
+resources/macos-*/
+dist/
