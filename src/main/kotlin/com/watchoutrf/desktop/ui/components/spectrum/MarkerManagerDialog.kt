@@ -30,10 +30,15 @@ fun MarkerManagerDialog(
     markers: List<Marker>,
     onDismiss: () -> Unit,
     onUpdateMarkerLabel: (Int, String) -> Unit,
+    onUpdateMarkerDevice: (Int, String) -> Unit,
     onRemoveMarker: (Int) -> Unit,
-    onAddMarker: (Long, String, MarkerColor?) -> Unit,
+    onAddMarker: (Long, String, MarkerColor?, String) -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    // Without this the platform caps the dialog width and the four inputs do not fit
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = DarkSurface,
@@ -89,6 +94,7 @@ fun MarkerManagerDialog(
                             MarkerItemRow(
                                 marker = marker,
                                 onUpdateLabel = { newLabel -> onUpdateMarkerLabel(marker.id, newLabel) },
+                                onUpdateDevice = { newDevice -> onUpdateMarkerDevice(marker.id, newDevice) },
                                 onRemove = { onRemoveMarker(marker.id) }
                             )
                         }
@@ -110,10 +116,12 @@ fun MarkerManagerDialog(
 private fun MarkerItemRow(
     marker: Marker,
     onUpdateLabel: (String) -> Unit,
+    onUpdateDevice: (String) -> Unit,
     onRemove: () -> Unit
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editText by remember { mutableStateOf(marker.label) }
+    var editDevice by remember { mutableStateOf(marker.device) }
 
     Row(
         modifier = Modifier
@@ -140,9 +148,27 @@ private fun MarkerItemRow(
                 )
             )
             Spacer(modifier = Modifier.width(8.dp))
+            OutlinedTextField(
+                value = editDevice,
+                onValueChange = { editDevice = it },
+                placeholder = { Text("Device (model, channel)", fontSize = 12.sp) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                textStyle = MaterialTheme.typography.bodySmall,
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CyanBright,
+                    unfocusedBorderColor = GridLine,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary
+                )
+            )
+            Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
                     onUpdateLabel(editText)
+                    onUpdateDevice(editDevice)
                     isEditing = false
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = CyanBright, contentColor = DeepBlack),
@@ -164,12 +190,20 @@ private fun MarkerItemRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary
                 )
+                if (marker.device.isNotBlank()) {
+                    Text(
+                        text = marker.device,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanBright
+                    )
+                }
             }
             
             IconButton(
                 onClick = { 
                     isEditing = true 
                     editText = marker.label
+                    editDevice = marker.device
                 }, 
                 modifier = Modifier.size(32.dp)
             ) {
@@ -187,10 +221,11 @@ private fun MarkerItemRow(
 
 @Composable
 private fun AddMarkerSection(
-    onAddMarker: (Long, String, MarkerColor?) -> Unit
+    onAddMarker: (Long, String, MarkerColor?, String) -> Unit
 ) {
     var freqText by remember { mutableStateOf("") }
     var labelText by remember { mutableStateOf("") }
+    var deviceText by remember { mutableStateOf("") }
     var errorText by remember { mutableStateOf<String?>(null) }
     var selectedColor by remember { mutableStateOf<MarkerColor?>(null) }
 
@@ -256,6 +291,23 @@ private fun AddMarkerSection(
                 onValueChange = { labelText = it },
                 placeholder = { Text("Label", fontSize = 12.sp) },
                 modifier = Modifier
+                    .weight(1.2f)
+                    .height(56.dp),
+                textStyle = MaterialTheme.typography.bodySmall,
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CyanBright,
+                    unfocusedBorderColor = GridLine,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary
+                )
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedTextField(
+                value = deviceText,
+                onValueChange = { deviceText = it },
+                placeholder = { Text("Device (optional)", fontSize = 12.sp) },
+                modifier = Modifier
                     .weight(1.5f)
                     .height(56.dp),
                 textStyle = MaterialTheme.typography.bodySmall,
@@ -277,9 +329,10 @@ private fun AddMarkerSection(
                         errorText = "Invalid frequency"
                     } else {
                         val hz = Math.round(mhz * 1_000_000.0)
-                        onAddMarker(hz, labelText, selectedColor)
+                        onAddMarker(hz, labelText, selectedColor, deviceText)
                         freqText = ""
                         labelText = ""
+                        deviceText = ""
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DeepBlack),

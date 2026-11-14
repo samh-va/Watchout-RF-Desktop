@@ -9,6 +9,8 @@ data class Marker(
     val amplitudeDbm: Float,
     val label: String = "M${id}",
     val color: MarkerColor = MarkerColor.CYAN,
+    /** The wireless device on this frequency, e.g. "ULXD4 ch 3" (optional). */
+    val device: String = "",
 ) {
     fun formatFrequency(): String {
         return when {

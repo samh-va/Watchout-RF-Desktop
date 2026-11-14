@@ -7,6 +7,8 @@ import com.watchoutrf.desktop.data.dsp.SweepTrace
 import com.watchoutrf.desktop.data.dsp.SyntheticSignalGenerator
 import com.watchoutrf.desktop.data.sdr.DesktopSdrSource
 import com.watchoutrf.desktop.data.export.WwbExporter
+import com.watchoutrf.desktop.data.shows.ShowConfig
+import com.watchoutrf.desktop.data.shows.ShowMarker
 import com.watchoutrf.desktop.domain.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -483,11 +485,17 @@ class SpectrumViewModel {
         }
     }
 
+    fun updateMarkerDevice(markerId: Int, newDevice: String) {
+        _state.update { cur ->
+            cur.copy(markers = cur.markers.map { if (it.id == markerId) it.copy(device = newDevice.trim()) else it })
+        }
+    }
+
     fun removeMarker(markerId: Int) {
         _state.update { cur -> cur.copy(markers = cur.markers.filter { it.id != markerId }) }
     }
 
-    fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null) {
+    fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null, device: String = "") {
         val config = _state.value.scanConfig
         val spectrum = _state.value.currentSpectrum
         
@@ -511,8 +519,70 @@ class SpectrumViewModel {
                     amplitudeDbm = ampDbm,
                     label = if (label.isNotBlank()) label else "M$markerIndex",
                     color = finalColor,
+                    device = device.trim(),
                 )
             )
+        }
+    }
+
+    // ─── Shows: save / restore the whole setup ───
+
+    /** Snapshot of the current setup, ready to be stored under [name]. */
+    fun captureShow(name: String, notes: String): ShowConfig {
+        val st = _state.value
+        val config = st.scanConfig
+        return ShowConfig(
+            name = name.trim(),
+            notes = notes.trim(),
+            deviceName = st.connectedDeviceName,
+            frequencyRange = config.frequencyRange,
+            numBins = config.numBins,
+            scanMode = config.scanMode,
+            maxHoldEnabled = config.maxHoldEnabled,
+            showAutoPeaks = st.showAutoPeaks,
+            gainMode = config.gainMode,
+            manualGainDb = config.manualGainDb,
+            markers = st.markers.map { ShowMarker(Math.round(it.frequencyHz), it.label, it.color, it.device) },
+        )
+    }
+
+    /** Restores a saved show: range, scan settings and markers. Traces start fresh. */
+    fun applyShow(show: ShowConfig) {
+        _state.update { cur ->
+            cur.copy(
+                scanConfig = cur.scanConfig.copy(
+                    frequencyRange = show.frequencyRange,
+                    // Ignore a resolution the FFT pipeline cannot handle (hand-edited file)
+                    numBins = show.numBins.takeIf { it in 256..16384 && (it and (it - 1)) == 0 }
+                        ?: cur.scanConfig.numBins,
+                    scanMode = show.scanMode,
+                    maxHoldEnabled = show.maxHoldEnabled,
+                    gainMode = show.gainMode,
+                    manualGainDb = show.manualGainDb,
+                ),
+                showAutoPeaks = show.showAutoPeaks,
+                markers = show.markers.mapIndexed { i, m ->
+                    Marker(
+                        id = i + 1,
+                        frequencyHz = m.frequencyHz.toDouble(),
+                        amplitudeDbm = -100f,
+                        label = m.label,
+                        color = m.color,
+                        device = m.device,
+                    )
+                },
+                activeMarkerX = null,
+                currentSpectrum = null,
+                maxHoldSpectrum = null,
+                waterfallHistory = emptyList(),
+                autoDetectedPeaks = emptyList(),
+            )
+        }
+        averager.reset()
+        if (!_state.value.isDemoMode && sdrSource.isOpen) {
+            scope.launch(Dispatchers.IO) {
+                hwMutex.withLock { sdrSource.setGain(show.gainMode, show.manualGainDb) }
+            }
         }
     }
 

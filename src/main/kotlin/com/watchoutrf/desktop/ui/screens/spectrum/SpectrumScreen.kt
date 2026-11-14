@@ -67,6 +67,10 @@ fun SpectrumScreen(
     val textMeasurer = rememberTextMeasurer()
 
     var showMarkerManager by remember { mutableStateOf(false) }
+    // Saved show configurations
+    val showRepository = remember { com.watchoutrf.desktop.data.shows.ShowRepository() }
+    var showShowsDialog by remember { mutableStateOf(false) }
+    var savedShows by remember { mutableStateOf(showRepository.list()) }
     // Width of the left panel; remembered between launches
     var panelWidth by remember { mutableStateOf(loadControlPanelWidth()) }
     var exportMessage    by remember { mutableStateOf<String?>(null) }
@@ -81,8 +85,32 @@ fun SpectrumScreen(
             markers = state.markers,
             onDismiss = { showMarkerManager = false },
             onUpdateMarkerLabel = viewModel::updateMarkerLabel,
+            onUpdateMarkerDevice = viewModel::updateMarkerDevice,
             onRemoveMarker = viewModel::removeMarker,
-            onAddMarker = viewModel::addMarkerManual,
+            onAddMarker = { hz, label, color, device -> viewModel.addMarkerManual(hz, label, color, device) },
+        )
+    }
+
+    if (showShowsDialog) {
+        val range = state.scanConfig.frequencyRange
+        ShowsDialog(
+            shows = savedShows,
+            currentSummary = "${range.name}  ·  ${range.formatStart()} – ${range.formatEnd()}  ·  " +
+                "${state.scanConfig.numBins} bins  ·  ${state.markers.size} marker(s)",
+            onSave = { name, notes ->
+                val error = showRepository.save(viewModel.captureShow(name, notes))
+                savedShows = showRepository.list()
+                error
+            },
+            onLoad = { show ->
+                viewModel.applyShow(show)
+                showShowsDialog = false
+            },
+            onDelete = { show ->
+                showRepository.delete(show.name)
+                savedShows = showRepository.list()
+            },
+            onDismiss = { showShowsDialog = false },
         )
     }
 
@@ -125,6 +153,10 @@ fun SpectrumScreen(
                 state = state,
                 width = panelWidth,
                 onToggleAutoPeaks = viewModel::toggleAutoPeaks,
+                onOpenShows = {
+                    savedShows = showRepository.list()
+                    showShowsDialog = true
+                },
                 onRangeSelected = viewModel::updateFrequencyRange,
                 onModeChanged = viewModel::updateScanMode,
                 onToggleMaxHold = viewModel::toggleMaxHold,
@@ -333,6 +365,7 @@ private fun ControlPanel(
     onExportWwb: () -> Unit,
     width: Dp,
     onToggleAutoPeaks: () -> Unit,
+    onOpenShows: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -464,15 +497,23 @@ private fun ControlPanel(
         Spacer(modifier = Modifier.height(8.dp))
         HorizontalDivider(color = GridLine, thickness = 0.5.dp)
         Spacer(modifier = Modifier.height(8.dp))
-        PanelButton(
-            text = "Export WWB7",
-            color = Color(0xFFFF6B35),
-            borderColor = if (hasData) Color(0xFFFF6B35).copy(alpha = 0.6f) else GridLine,
-            icon = Icons.Default.Check,
-            enabled = hasData,
-            onClick = onExportWwb,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            // Save / load whole show configurations
+            PanelButton(
+                text = "Shows",
+                color = CyanBright,
+                onClick = onOpenShows,
+                modifier = Modifier.weight(1f),
+            )
+            PanelButton(
+                text = "Export WWB7",
+                color = Color(0xFFFF6B35),
+                borderColor = if (hasData) Color(0xFFFF6B35).copy(alpha = 0.6f) else GridLine,
+                enabled = hasData,
+                onClick = onExportWwb,
+                modifier = Modifier.weight(1.6f),
+            )
+        }
     }  // end Column
 }  // end ControlPanel
 
@@ -1011,6 +1052,16 @@ private fun ControlPanelMarkerItem(
                 text = formatMhz(marker.frequencyHz),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
                 color = TextSecondary,
+            )
+        }
+        // The wireless device on this frequency (set it in Manage)
+        if (marker.device.isNotBlank()) {
+            Text(
+                text = marker.device,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(modifier = Modifier.height(6.dp))
