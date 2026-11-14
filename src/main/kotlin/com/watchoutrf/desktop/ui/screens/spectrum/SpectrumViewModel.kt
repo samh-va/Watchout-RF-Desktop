@@ -485,11 +485,17 @@ class SpectrumViewModel {
         }
     }
 
+    fun updateMarkerDevice(markerId: Int, newDevice: String) {
+        _state.update { cur ->
+            cur.copy(markers = cur.markers.map { if (it.id == markerId) it.copy(device = newDevice.trim()) else it })
+        }
+    }
+
     fun removeMarker(markerId: Int) {
         _state.update { cur -> cur.copy(markers = cur.markers.filter { it.id != markerId }) }
     }
 
-    fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null) {
+    fun addMarkerManual(freqHz: Long, label: String, color: MarkerColor? = null, device: String = "") {
         val config = _state.value.scanConfig
         val spectrum = _state.value.currentSpectrum
         
@@ -513,6 +519,7 @@ class SpectrumViewModel {
                     amplitudeDbm = ampDbm,
                     label = if (label.isNotBlank()) label else "M$markerIndex",
                     color = finalColor,
+                    device = device.trim(),
                 )
             )
         }
@@ -535,7 +542,7 @@ class SpectrumViewModel {
             showAutoPeaks = st.showAutoPeaks,
             gainMode = config.gainMode,
             manualGainDb = config.manualGainDb,
-            markers = st.markers.map { ShowMarker(Math.round(it.frequencyHz), it.label, it.color) },
+            markers = st.markers.map { ShowMarker(Math.round(it.frequencyHz), it.label, it.color, it.device) },
         )
     }
 
@@ -561,6 +568,7 @@ class SpectrumViewModel {
                         amplitudeDbm = -100f,
                         label = m.label,
                         color = m.color,
+                        device = m.device,
                     )
                 },
                 activeMarkerX = null,

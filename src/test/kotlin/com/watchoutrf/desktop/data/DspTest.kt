@@ -243,7 +243,7 @@ class ShowRepositoryTest {
             manualGainDb = 28,
             markers = listOf(
                 com.watchoutrf.desktop.data.shows.ShowMarker(566_350_000L, "Voz líder = #1", com.watchoutrf.desktop.domain.model.MarkerColor.MAGENTA),
-                com.watchoutrf.desktop.data.shows.ShowMarker(518_000_000L, "IEM Batería", com.watchoutrf.desktop.domain.model.MarkerColor.GREEN),
+                com.watchoutrf.desktop.data.shows.ShowMarker(518_000_000L, "IEM Batería", com.watchoutrf.desktop.domain.model.MarkerColor.GREEN, device = "PSM1000 ch 2"),
             ),
         )
 
@@ -267,6 +267,9 @@ class ShowRepositoryTest {
             assertEquals(listOf("teatro colón / bogotá"), repo.list().filter { it.matches("colón updated") }.map { it.name })
             assertEquals(2, repo.list().count { it.matches("batería") }) // marker labels are searchable
             assertEquals(0, repo.list().count { it.matches("madrid") })
+            assertEquals(2, repo.list().count { it.matches("psm1000") }) // marker devices are searchable
+            assertEquals("PSM1000 ch 2", repo.list().first().markers[1].device)
+            assertEquals("", repo.list().first().markers[0].device)
 
             assertTrue(repo.save(show("   ")) != null)
             assertTrue(repo.delete("FESTIVAL ESTÉREO"))

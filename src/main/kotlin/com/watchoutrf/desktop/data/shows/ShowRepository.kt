@@ -15,6 +15,8 @@ data class ShowMarker(
     val frequencyHz: Long,
     val label: String,
     val color: MarkerColor,
+    /** The wireless device on this frequency, e.g. "ULXD4 ch 3" (optional). */
+    val device: String = "",
 )
 
 /**
@@ -39,11 +41,12 @@ data class ShowConfig(
     fun formatSavedAt(): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(savedAtMillis))
 
-    /** True when every word of [query] appears in the name, notes or a marker label. */
+    /** True when every word of [query] appears in the name, notes, or a marker's label or device. */
     fun matches(query: String): Boolean {
         val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (words.isEmpty()) return true
-        val haystack = (listOf(name, notes, frequencyRange.name, formatSavedAt()) + markers.map { it.label })
+        val haystack = (listOf(name, notes, frequencyRange.name, formatSavedAt()) +
+            markers.map { it.label } + markers.map { it.device })
             .joinToString("\n").lowercase()
         return words.all { it in haystack }
     }
@@ -88,6 +91,7 @@ class ShowRepository(private val directory: File = defaultDirectory()) {
                     setProperty("marker.$i.frequencyHz", m.frequencyHz.toString())
                     setProperty("marker.$i.label", m.label)
                     setProperty("marker.$i.color", m.color.name)
+                    if (m.device.isNotBlank()) setProperty("marker.$i.device", m.device)
                 }
             }
             file.writer(Charsets.UTF_8).use { props.store(it, "WatchoutRF show") }
@@ -141,6 +145,7 @@ class ShowRepository(private val directory: File = defaultDirectory()) {
                     frequencyHz = p.getProperty("marker.$i.frequencyHz").toLong(),
                     label = p.getProperty("marker.$i.label", "M${i + 1}"),
                     color = enumOr(p.getProperty("marker.$i.color"), MarkerColor.CYAN),
+                    device = p.getProperty("marker.$i.device", ""),
                 )
             },
         ).takeIf { it.frequencyRange.endHz > it.frequencyRange.startHz }

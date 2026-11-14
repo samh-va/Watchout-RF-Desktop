@@ -85,8 +85,9 @@ fun SpectrumScreen(
             markers = state.markers,
             onDismiss = { showMarkerManager = false },
             onUpdateMarkerLabel = viewModel::updateMarkerLabel,
+            onUpdateMarkerDevice = viewModel::updateMarkerDevice,
             onRemoveMarker = viewModel::removeMarker,
-            onAddMarker = viewModel::addMarkerManual,
+            onAddMarker = { hz, label, color, device -> viewModel.addMarkerManual(hz, label, color, device) },
         )
     }
 
@@ -1051,6 +1052,16 @@ private fun ControlPanelMarkerItem(
                 text = formatMhz(marker.frequencyHz),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp),
                 color = TextSecondary,
+            )
+        }
+        // The wireless device on this frequency (set it in Manage)
+        if (marker.device.isNotBlank()) {
+            Text(
+                text = marker.device,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(modifier = Modifier.height(6.dp))
