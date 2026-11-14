@@ -430,6 +430,11 @@ class SpectrumViewModel {
         if (!enabled) averager.resetMaxHold()
     }
 
+    /** Show / hide the automatically detected peak markers. */
+    fun toggleAutoPeaks() {
+        _state.update { it.copy(showAutoPeaks = !it.showAutoPeaks) }
+    }
+
     fun resetMaxHold() {
         averager.resetMaxHold()
         _state.update { it.copy(maxHoldSpectrum = null) }

@@ -19,9 +19,15 @@ data class SpectrumState(
     val hwError: String? = null,
     val debugState: String = "INIT",
     val activeMarkerX: Float? = null,  // Normalized X position [0..1], null = no active marker
+    /** Whether the automatically detected peak markers are drawn. */
+    val showAutoPeaks: Boolean = true,
 ) {
+    /** Auto-detected peaks, or nothing when the user switched them off. */
+    val visibleAutoPeaks: List<Marker>
+        get() = if (showAutoPeaks) autoDetectedPeaks else emptyList()
+
     val allMarkers: List<Marker>
-        get() = markers + autoDetectedPeaks
+        get() = markers + visibleAutoPeaks
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -48,6 +54,7 @@ data class SpectrumState(
         if (hwError != other.hwError) return false
         if (debugState != other.debugState) return false
         if (activeMarkerX != other.activeMarkerX) return false
+        if (showAutoPeaks != other.showAutoPeaks) return false
 
         return true
     }
@@ -65,6 +72,7 @@ data class SpectrumState(
         result = 31 * result + (hwError?.hashCode() ?: 0)
         result = 31 * result + debugState.hashCode()
         result = 31 * result + (activeMarkerX?.hashCode() ?: 0)
+        result = 31 * result + showAutoPeaks.hashCode()
         return result
     }
 }

@@ -26,7 +26,7 @@ fun FrequencyRangeSelector(
     onRangeSelected: (FrequencyRange) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.widthIn(max = 180.dp)) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Text(
             text = "FREQUENCY",
             style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 2.sp),
