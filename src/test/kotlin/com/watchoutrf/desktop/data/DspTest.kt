@@ -172,3 +172,57 @@ class SpectrumAveragerTest {
         assertContentEquals(floatArrayOf(-10f, -20f, -30f), averager.average(floatArrayOf(-10f, -20f, -30f), 0.9f))
     }
 }
+
+class SweepTraceTest {
+    private val e = com.watchoutrf.desktop.data.dsp.SweepTrace.EMPTY
+
+    @Test
+    fun `fills gaps by interpolation then smooths`() {
+        val out = com.watchoutrf.desktop.data.dsp.SweepTrace.finish(floatArrayOf(-90f, e, e, -60f, -60f))
+        // filled: -90, -80, -70, -60, -60 -> 3-bin mean with replicated edges
+        assertContentEquals(floatArrayOf(-86.666664f, -80f, -70f, -63.333332f, -60f), out)
+    }
+
+    @Test
+    fun `preview keeps unswept bins and blends swept ones like the averager`() {
+        val raw = floatArrayOf(-50f, -50f, e, e)
+        val previous = floatArrayOf(-90f, -90f, -90f, -90f)
+        val out = com.watchoutrf.desktop.data.dsp.SweepTrace.preview(raw, 2, previous, 0.5f, -120f)
+        assertContentEquals(floatArrayOf(-70f, -70f, -90f, -90f), out)
+
+        val first = com.watchoutrf.desktop.data.dsp.SweepTrace.preview(raw, 2, null, 0.5f, -120f)
+        assertContentEquals(floatArrayOf(-50f, -50f, -120f, -120f), first)
+        assertContentEquals(floatArrayOf(-50f, -50f, e, e), raw) // input untouched
+    }
+}
+
+/** Runs only when an RTL-SDR dongle is attached; otherwise it is a no-op. */
+class DongleSmokeTest {
+    @Test
+    fun `hops return plausible spectra at the configured sample rate`() {
+        if (com.watchoutrf.desktop.RtlSdr.getDeviceCount() <= 0) {
+            println("DongleSmokeTest: no dongle attached, skipped")
+            return
+        }
+        val source = com.watchoutrf.desktop.data.sdr.DesktopSdrSource()
+        assertEquals(null, source.open(0))
+        try {
+            source.startStream()
+            val step = (com.watchoutrf.desktop.data.sdr.DesktopSdrSource.SAMPLE_RATE_HZ * 0.8).toLong()
+            val hops = 30
+            val start = System.nanoTime()
+            for (hop in 0 until hops) {
+                assertTrue(source.setFrequency(470_000_000L + hop * step + step / 2))
+                source.flush()
+                val spectrum = source.readSpectrum(1024, 2)
+                assertTrue(spectrum != null && spectrum.size == 1024, "hop $hop returned no data")
+                assertTrue(spectrum.all { it.isFinite() && it > -200f && it < 20f }, "hop $hop out of range")
+            }
+            val msPerHop = (System.nanoTime() - start) / 1e6 / hops
+            println("DongleSmokeTest: %.1f ms per hop".format(java.util.Locale.US, msPerHop))
+            assertTrue(msPerHop < 60.0, "hops are unexpectedly slow: $msPerHop ms")
+        } finally {
+            source.close()
+        }
+    }
+}

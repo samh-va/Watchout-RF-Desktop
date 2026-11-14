@@ -5,6 +5,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -60,6 +67,8 @@ fun SpectrumScreen(
     val textMeasurer = rememberTextMeasurer()
 
     var showMarkerManager by remember { mutableStateOf(false) }
+    // Width of the left panel; remembered between launches
+    var panelWidth by remember { mutableStateOf(loadControlPanelWidth()) }
     var exportMessage    by remember { mutableStateOf<String?>(null) }
 
     // Auto-start scanning on composition
@@ -111,9 +120,11 @@ fun SpectrumScreen(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            // ─── LEFT CONTROL PANEL ───
+            // ─── LEFT CONTROL PANEL (width adjustable with the drag handle) ───
             ControlPanel(
                 state = state,
+                width = panelWidth,
+                onToggleAutoPeaks = viewModel::toggleAutoPeaks,
                 onRangeSelected = viewModel::updateFrequencyRange,
                 onModeChanged = viewModel::updateScanMode,
                 onToggleMaxHold = viewModel::toggleMaxHold,
@@ -144,6 +155,14 @@ fun SpectrumScreen(
                         exportMessage = viewModel.exportWwb(file) ?: "Saved to:\n${file.absolutePath}"
                     }
                 },
+            )
+
+            // ─── DRAG HANDLE: resizes the left panel ───
+            PanelResizeHandle(
+                onDrag = { deltaDp ->
+                    panelWidth = (panelWidth + deltaDp).coerceIn(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH)
+                },
+                onDragEnd = { saveControlPanelWidth(panelWidth) },
             )
 
             // ─── RIGHT SPECTRUM AREA ───
@@ -312,10 +331,12 @@ private fun ControlPanel(
     onColorChange: (Int, MarkerColor) -> Unit,
     onUpdateMarkerLabel: (Int, String) -> Unit,
     onExportWwb: () -> Unit,
+    width: Dp,
+    onToggleAutoPeaks: () -> Unit,
 ) {
     Column(
         modifier = Modifier
-            .width(180.dp)
+            .width(width)
             .fillMaxHeight()
             .background(DarkSurface)
             .border(width = 1.dp, color = GridLine, shape = RoundedCornerShape(0.dp))
@@ -327,26 +348,28 @@ private fun ControlPanel(
             onRangeSelected = onRangeSelected,
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         HorizontalDivider(color = GridLine, thickness = 1.dp)
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Scan mode selector
         ScanModeSelector(
             currentMode = state.scanConfig.scanMode,
             maxHoldEnabled = state.scanConfig.maxHoldEnabled,
+            autoPeaksEnabled = state.showAutoPeaks,
             onModeChanged = onModeChanged,
             onToggleMaxHold = onToggleMaxHold,
+            onToggleAutoPeaks = onToggleAutoPeaks,
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         HorizontalDivider(color = GridLine, thickness = 1.dp)
 
-        // Custom Markers Scroller
+        // Custom Markers Scroller — takes all the height the other sections leave free
         androidx.compose.foundation.lazy.LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            contentPadding = PaddingValues(vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(state.markers) { marker ->
                 ControlPanelMarkerItem(
@@ -357,7 +380,10 @@ private fun ControlPanel(
             }
         }
 
-        // ─── Action Buttons ───
+        // ─── Action Buttons (compact, so the marker list above gets the space) ───
+        HorizontalDivider(color = GridLine, thickness = 1.dp)
+        Spacer(modifier = Modifier.height(8.dp))
+
         // Start / Stop button
         Button(
             onClick = onStartStop,
@@ -366,8 +392,10 @@ private fun ControlPanel(
                 contentColor = if (state.isScanning) ErrorRed else DeepBlack,
             ),
             shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
             modifier = Modifier
                 .fillMaxWidth()
+                .height(34.dp)
                 .then(
                     if (state.isScanning) {
                         Modifier.border(1.dp, ErrorRed, RoundedCornerShape(8.dp))
@@ -390,120 +418,153 @@ private fun ControlPanel(
 
         // Reset Max Hold button (visible when max hold is on)
         if (state.scanConfig.maxHoldEnabled) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
+            Spacer(modifier = Modifier.height(6.dp))
+            PanelButton(
+                text = "Reset Hold",
+                color = AmberYellow,
+                icon = Icons.Default.Refresh,
                 onClick = onResetMaxHold,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberYellow),
-                border = androidx.compose.foundation.BorderStroke(1.dp, 
-                    brush = androidx.compose.ui.graphics.SolidColor(AmberYellow.copy(alpha = 0.5f)),
-                ),
-                shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Reset Hold",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
+            )
         }
 
-        // Add Marker button (visible when activeMarkerX is not null)
+        // Add Marker button (visible when the cursor is placed on the spectrum)
         if (state.activeMarkerX != null) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
+            Spacer(modifier = Modifier.height(6.dp))
+            PanelButton(
+                text = "Add Marker",
+                color = CyanBright,
                 onClick = onAddMarker,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanBright),
-                border = androidx.compose.foundation.BorderStroke(1.dp, 
-                    brush = androidx.compose.ui.graphics.SolidColor(CyanBright.copy(alpha = 0.5f)),
-                ),
-                shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = "Add Marker",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
+            )
         }
 
-        // Clear markers button (visible when markers exist)
-        if (state.markers.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = onClearMarkers,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                border = androidx.compose.foundation.BorderStroke(1.dp, 
-                    brush = androidx.compose.ui.graphics.SolidColor(GridLine),
-                ),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = "Clear Markers",
-                    style = MaterialTheme.typography.labelSmall,
+        // Marker list actions share one row
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            if (state.markers.isNotEmpty()) {
+                PanelButton(
+                    text = "Clear",
+                    color = TextSecondary,
+                    borderColor = GridLine,
+                    onClick = onClearMarkers,
+                    modifier = Modifier.weight(1f),
                 )
             }
-        }
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onManageMarkers,
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
-            border = androidx.compose.foundation.BorderStroke(1.dp,
-                brush = androidx.compose.ui.graphics.SolidColor(NeonGreen.copy(alpha = 0.5f)),
-            ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Manage Markers",
-                style = MaterialTheme.typography.labelSmall,
+            PanelButton(
+                text = "Manage",
+                color = NeonGreen,
+                onClick = onManageMarkers,
+                modifier = Modifier.weight(1f),
             )
         }
 
         // ─── Export WWB7 ───
         val hasData = state.currentSpectrum != null || state.maxHoldSpectrum != null
-        Spacer(modifier = Modifier.height(16.dp))
-        HorizontalDivider(color = GridLine, thickness = 0.5.dp)
-        Spacer(modifier = Modifier.height(12.dp))
-        OutlinedButton(
-            onClick = onExportWwb,
-            enabled = hasData,
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = Color(0xFFFF6B35),
-                disabledContentColor = TextSecondary,
-            ),
-            border = androidx.compose.foundation.BorderStroke(
-                width = 1.dp,
-                brush = if (hasData)
-                    androidx.compose.ui.graphics.SolidColor(Color(0xFFFF6B35).copy(alpha = 0.6f))
-                else
-                    androidx.compose.ui.graphics.SolidColor(GridLine),
-            ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = null,
-                modifier = Modifier.size(13.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = "Export WWB7",
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-
         Spacer(modifier = Modifier.height(8.dp))
+        HorizontalDivider(color = GridLine, thickness = 0.5.dp)
+        Spacer(modifier = Modifier.height(8.dp))
+        PanelButton(
+            text = "Export WWB7",
+            color = Color(0xFFFF6B35),
+            borderColor = if (hasData) Color(0xFFFF6B35).copy(alpha = 0.6f) else GridLine,
+            icon = Icons.Default.Check,
+            enabled = hasData,
+            onClick = onExportWwb,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }  // end Column
 }  // end ControlPanel
+
+/** Low-height outlined button used in the control panel. */
+@Composable
+private fun PanelButton(
+    text: String,
+    color: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    borderColor: Color = color.copy(alpha = 0.5f),
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    enabled: Boolean = true,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = color,
+            disabledContentColor = TextSecondary,
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+        modifier = modifier.height(30.dp),
+    ) {
+        if (icon != null) {
+            Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(13.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════
+// LEFT PANEL RESIZING
+// ════════════════════════════════════════════════════════
+private val PANEL_MIN_WIDTH = 180.dp
+private val PANEL_MAX_WIDTH = 520.dp
+private const val PREF_PANEL_WIDTH = "controlPanelWidthDp"
+
+private fun panelPrefs(): java.util.prefs.Preferences =
+    java.util.prefs.Preferences.userRoot().node("com/watchoutrf/desktop")
+
+private fun loadControlPanelWidth(): Dp = try {
+    panelPrefs().getFloat(PREF_PANEL_WIDTH, PANEL_MIN_WIDTH.value).dp.coerceIn(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH)
+} catch (e: Exception) {
+    PANEL_MIN_WIDTH
+}
+
+private fun saveControlPanelWidth(width: Dp) {
+    try {
+        panelPrefs().putFloat(PREF_PANEL_WIDTH, width.value)
+    } catch (e: Exception) {
+        // Preferences are a convenience; the panel still works without them
+    }
+}
+
+/**
+ * Thin vertical grip between the control panel and the spectrum.
+ * Drag it sideways to make the panel wider or narrower.
+ */
+@Composable
+private fun PanelResizeHandle(onDrag: (Dp) -> Unit, onDragEnd: () -> Unit) {
+    val density = LocalDensity.current
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .width(8.dp)
+            .fillMaxHeight()
+            .background(DarkSurface)
+            .pointerHoverIcon(PointerIcon(java.awt.Cursor(java.awt.Cursor.E_RESIZE_CURSOR)))
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { deltaPx -> onDrag(with(density) { deltaPx.toDp() }) },
+                onDragStopped = { onDragEnd() },
+            ),
+    ) {
+        // Grip mark
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .height(36.dp)
+                .background(TextSecondary.copy(alpha = 0.6f), RoundedCornerShape(1.dp)),
+        )
+    }
+}
 
 // ════════════════════════════════════════════════════════
 // RIGHT SPECTRUM AREA
@@ -643,7 +704,7 @@ private fun SpectrumArea(
 @Composable
 private fun BottomMarkerBar(state: SpectrumState) {
     val activeX = state.activeMarkerX
-    val autoPeaks = state.autoDetectedPeaks
+    val autoPeaks = state.visibleAutoPeaks
 
     Row(
         verticalAlignment = Alignment.CenterVertically,

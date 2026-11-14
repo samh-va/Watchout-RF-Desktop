@@ -20,7 +20,13 @@ interface RtlSdrLibrary : Library {
                 val currentPath = System.getProperty("jna.library.path") ?: ""
                 System.setProperty(
                     "jna.library.path",
-                    listOf("/opt/homebrew/lib", "/usr/local/lib", currentPath)
+                    // 1. libraries bundled inside the packaged app, 2. Homebrew, 3. user setting
+                    listOf(
+                        System.getProperty("compose.application.resources.dir") ?: "",
+                        "/opt/homebrew/lib",
+                        "/usr/local/lib",
+                        currentPath,
+                    )
                         .filter { it.isNotBlank() }
                         .joinToString(java.io.File.pathSeparator),
                 )

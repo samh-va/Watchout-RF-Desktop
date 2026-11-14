@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.watchoutrf.desktop.domain.model.ScanMode
@@ -19,8 +20,10 @@ import com.watchoutrf.desktop.ui.theme.*
 fun ScanModeSelector(
     currentMode: ScanMode,
     maxHoldEnabled: Boolean,
+    autoPeaksEnabled: Boolean,
     onModeChanged: (ScanMode) -> Unit,
     onToggleMaxHold: () -> Unit,
+    onToggleAutoPeaks: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -51,7 +54,7 @@ fun ScanModeSelector(
                         }
                     )
                     .clickable { onModeChanged(mode) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 Text(
                     text = mode.name.replace('_', ' '),
@@ -61,30 +64,38 @@ fun ScanModeSelector(
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Max Hold toggle
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Max Hold",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (maxHoldEnabled) AmberYellow else TextSecondary,
-                modifier = Modifier.weight(1f),
-            )
-            Switch(
-                checked = maxHoldEnabled,
-                onCheckedChange = { onToggleMaxHold() },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = NeonGreen,
-                    checkedTrackColor = NeonGreen.copy(alpha = 0.3f),
-                    uncheckedThumbColor = TextSecondary,
-                    uncheckedTrackColor = DarkSurfaceVariant,
-                    uncheckedBorderColor = GridLine,
-                ),
-            )
-        }
+        ToggleRow(label = "Max Hold", checked = maxHoldEnabled, onToggle = onToggleMaxHold)
+        // Shows / hides the automatically detected peak markers (P1…P4)
+        ToggleRow(label = "Auto Peaks", checked = autoPeaksEnabled, onToggle = onToggleAutoPeaks)
+    }
+}
+
+/** Compact label + switch row. */
+@Composable
+private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().height(34.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (checked) AmberYellow else TextSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = { onToggle() },
+            modifier = Modifier.scale(0.75f),
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = NeonGreen,
+                checkedTrackColor = NeonGreen.copy(alpha = 0.3f),
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = DarkSurfaceVariant,
+                uncheckedBorderColor = GridLine,
+            ),
+        )
     }
 }
