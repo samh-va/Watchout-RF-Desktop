@@ -226,3 +226,56 @@ class DongleSmokeTest {
         }
     }
 }
+
+class ShowRepositoryTest {
+    private fun show(name: String, notes: String = "", savedAt: Long = 1_000L) =
+        com.watchoutrf.desktop.data.shows.ShowConfig(
+            name = name,
+            notes = notes,
+            savedAtMillis = savedAt,
+            deviceName = "Generic RTL2832U",
+            frequencyRange = com.watchoutrf.desktop.domain.model.FrequencyRange.IEM_RANGE,
+            numBins = 4096,
+            scanMode = com.watchoutrf.desktop.domain.model.ScanMode.SINGLE,
+            maxHoldEnabled = false,
+            showAutoPeaks = false,
+            gainMode = com.watchoutrf.desktop.domain.model.GainMode.Manual,
+            manualGainDb = 28,
+            markers = listOf(
+                com.watchoutrf.desktop.data.shows.ShowMarker(566_350_000L, "Voz líder = #1", com.watchoutrf.desktop.domain.model.MarkerColor.MAGENTA),
+                com.watchoutrf.desktop.data.shows.ShowMarker(518_000_000L, "IEM Batería", com.watchoutrf.desktop.domain.model.MarkerColor.GREEN),
+            ),
+        )
+
+    @Test
+    fun `saves, lists, replaces, searches and deletes`() {
+        val dir = java.nio.file.Files.createTempDirectory("watchoutrf-shows").toFile()
+        try {
+            val repo = com.watchoutrf.desktop.data.shows.ShowRepository(dir)
+            assertEquals(emptyList(), repo.list())
+
+            val bogota = show("Teatro Colón / Bogotá", notes = "Shure Axient, 8 canales", savedAt = 2_000L)
+            assertEquals(null, repo.save(bogota))
+            assertEquals(null, repo.save(show("Festival Estéreo", savedAt = 3_000L)))
+            assertEquals(listOf(show("Festival Estéreo", savedAt = 3_000L), bogota), repo.list()) // newest first, lossless
+
+            // Same name, different case: replaced rather than duplicated
+            assertEquals(null, repo.save(bogota.copy(name = "teatro colón / bogotá", notes = "updated", savedAtMillis = 4_000L)))
+            assertEquals(2, repo.list().size)
+            assertEquals("updated", repo.list().first().notes)
+
+            assertEquals(listOf("teatro colón / bogotá"), repo.list().filter { it.matches("colón updated") }.map { it.name })
+            assertEquals(2, repo.list().count { it.matches("batería") }) // marker labels are searchable
+            assertEquals(0, repo.list().count { it.matches("madrid") })
+
+            assertTrue(repo.save(show("   ")) != null)
+            assertTrue(repo.delete("FESTIVAL ESTÉREO"))
+            assertEquals(1, repo.list().size)
+
+            java.io.File(dir, "broken.show").writeText("not a show")
+            assertEquals(1, repo.list().size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+}

@@ -7,6 +7,8 @@ import com.watchoutrf.desktop.data.dsp.SweepTrace
 import com.watchoutrf.desktop.data.dsp.SyntheticSignalGenerator
 import com.watchoutrf.desktop.data.sdr.DesktopSdrSource
 import com.watchoutrf.desktop.data.export.WwbExporter
+import com.watchoutrf.desktop.data.shows.ShowConfig
+import com.watchoutrf.desktop.data.shows.ShowMarker
 import com.watchoutrf.desktop.domain.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -513,6 +515,66 @@ class SpectrumViewModel {
                     color = finalColor,
                 )
             )
+        }
+    }
+
+    // ─── Shows: save / restore the whole setup ───
+
+    /** Snapshot of the current setup, ready to be stored under [name]. */
+    fun captureShow(name: String, notes: String): ShowConfig {
+        val st = _state.value
+        val config = st.scanConfig
+        return ShowConfig(
+            name = name.trim(),
+            notes = notes.trim(),
+            deviceName = st.connectedDeviceName,
+            frequencyRange = config.frequencyRange,
+            numBins = config.numBins,
+            scanMode = config.scanMode,
+            maxHoldEnabled = config.maxHoldEnabled,
+            showAutoPeaks = st.showAutoPeaks,
+            gainMode = config.gainMode,
+            manualGainDb = config.manualGainDb,
+            markers = st.markers.map { ShowMarker(Math.round(it.frequencyHz), it.label, it.color) },
+        )
+    }
+
+    /** Restores a saved show: range, scan settings and markers. Traces start fresh. */
+    fun applyShow(show: ShowConfig) {
+        _state.update { cur ->
+            cur.copy(
+                scanConfig = cur.scanConfig.copy(
+                    frequencyRange = show.frequencyRange,
+                    // Ignore a resolution the FFT pipeline cannot handle (hand-edited file)
+                    numBins = show.numBins.takeIf { it in 256..16384 && (it and (it - 1)) == 0 }
+                        ?: cur.scanConfig.numBins,
+                    scanMode = show.scanMode,
+                    maxHoldEnabled = show.maxHoldEnabled,
+                    gainMode = show.gainMode,
+                    manualGainDb = show.manualGainDb,
+                ),
+                showAutoPeaks = show.showAutoPeaks,
+                markers = show.markers.mapIndexed { i, m ->
+                    Marker(
+                        id = i + 1,
+                        frequencyHz = m.frequencyHz.toDouble(),
+                        amplitudeDbm = -100f,
+                        label = m.label,
+                        color = m.color,
+                    )
+                },
+                activeMarkerX = null,
+                currentSpectrum = null,
+                maxHoldSpectrum = null,
+                waterfallHistory = emptyList(),
+                autoDetectedPeaks = emptyList(),
+            )
+        }
+        averager.reset()
+        if (!_state.value.isDemoMode && sdrSource.isOpen) {
+            scope.launch(Dispatchers.IO) {
+                hwMutex.withLock { sdrSource.setGain(show.gainMode, show.manualGainDb) }
+            }
         }
     }
 
