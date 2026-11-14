@@ -130,12 +130,12 @@ class SpectrumViewModel {
                     }
                 }
 
-                // ── FIXED SWEEP: use 80% of real SDR bandwidth as hop step ──
-                // RTL-SDR real BW is 2,048,000 Hz. We use 80% (1,638,400 Hz)
-                // as the hop advance so consecutive hops always overlap and
-                // no frequency falls into a blind gap between hops.
-                val sdrBwHz    = 2_048_000L
-                val usableBwHz = (sdrBwHz * 0.80).toLong()  // 1,638,400 Hz
+                // ── FIXED SWEEP: use 80% of the captured bandwidth as hop step ──
+                // Each hop captures SAMPLE_RATE_HZ around its centre. Advancing by
+                // 80% of that makes consecutive hops overlap, so no frequency falls
+                // into a blind gap and the rolled-off band edges are never used.
+                val sdrBwHz    = DesktopSdrSource.SAMPLE_RATE_HZ.toLong()
+                val usableBwHz = (sdrBwHz * 0.80).toLong()
                 val numHops    = max(1, ceil(spanHz.toDouble() / usableBwHz.toDouble()).toInt())
                 
                 val masterSpectrum = FloatArray(config.numBins) { SweepTrace.EMPTY }
@@ -167,7 +167,12 @@ class SpectrumViewModel {
                             if (!sdrSource.setFrequency(hopCenterHz)) {
                                 null // tuner rejected the frequency or the dongle is gone
                             } else {
-                                delay(10) // wait for PLL lock
+                                // No settle delay: rtlsdr_set_center_freq() only returns
+                                // once the PLL has locked (~26 ms). Measured sweeps with and
+                                // without an extra 10 ms wait are indistinguishable, and the
+                                // wait cost a quarter of the sweep time. The buffer reset and
+                                // the discarded first read below ARE needed — without them
+                                // samples from the previous hop leak into this one.
                                 sdrSource.flush()
 
                                 val numReads = if (spanHz > 50_000_000L) 2 else 4

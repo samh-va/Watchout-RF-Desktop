@@ -195,3 +195,34 @@ class SweepTraceTest {
         assertContentEquals(floatArrayOf(-50f, -50f, e, e), raw) // input untouched
     }
 }
+
+/** Runs only when an RTL-SDR dongle is attached; otherwise it is a no-op. */
+class DongleSmokeTest {
+    @Test
+    fun `hops return plausible spectra at the configured sample rate`() {
+        if (com.watchoutrf.desktop.RtlSdr.getDeviceCount() <= 0) {
+            println("DongleSmokeTest: no dongle attached, skipped")
+            return
+        }
+        val source = com.watchoutrf.desktop.data.sdr.DesktopSdrSource()
+        assertEquals(null, source.open(0))
+        try {
+            source.startStream()
+            val step = (com.watchoutrf.desktop.data.sdr.DesktopSdrSource.SAMPLE_RATE_HZ * 0.8).toLong()
+            val hops = 30
+            val start = System.nanoTime()
+            for (hop in 0 until hops) {
+                assertTrue(source.setFrequency(470_000_000L + hop * step + step / 2))
+                source.flush()
+                val spectrum = source.readSpectrum(1024, 2)
+                assertTrue(spectrum != null && spectrum.size == 1024, "hop $hop returned no data")
+                assertTrue(spectrum.all { it.isFinite() && it > -200f && it < 20f }, "hop $hop out of range")
+            }
+            val msPerHop = (System.nanoTime() - start) / 1e6 / hops
+            println("DongleSmokeTest: %.1f ms per hop".format(java.util.Locale.US, msPerHop))
+            assertTrue(msPerHop < 60.0, "hops are unexpectedly slow: $msPerHop ms")
+        } finally {
+            source.close()
+        }
+    }
+}
